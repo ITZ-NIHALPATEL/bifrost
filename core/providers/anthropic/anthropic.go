@@ -722,6 +722,10 @@ func HandleAnthropicChatCompletionStreaming(
 		var finishReason *string
 
 		usage := &schemas.BifrostLLMUsage{}
+		// Register the accumulating usage handle so a mid-stream cancel/timeout
+		// can bill for tokens already processed Mutated in place below;
+		// the deferred HandleStreamCancellation/Timeout reads it from context.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
 
 		// Check for structured output tool name and track state
 		var structuredOutputToolName string

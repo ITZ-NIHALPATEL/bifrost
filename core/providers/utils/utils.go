@@ -2408,8 +2408,32 @@ func HandleStreamCancellation(
 		cancelErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 
+	// Bill for tokens the provider already processed before the client
+	// disconnected.
+	attachBilledUsageFromContext(ctx, cancelErr)
+
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
+}
+
+// attachBilledUsageFromContext copies a streaming provider's in-place
+// accumulated usage handle (BifrostContextKeyStreamAccumulatedUsage), if any,
+// onto the error's BilledUsage so downstream post-hooks (governance billing,
+// logging cost) can charge for tokens the provider already processed before the
+// stream was cancelled or timed out. No-op when nothing measurable was
+// accumulated, so failures that consumed no tokens bill nothing.
+func attachBilledUsageFromContext(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError) {
+	if ctx == nil || bifrostErr == nil {
+		return
+	}
+	usage, ok := ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage)
+	if !ok || usage == nil {
+		return
+	}
+	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		return
+	}
+	bifrostErr.ExtraFields.BilledUsage = usage
 }
 
 // HandleStreamTimeout should be called when a streaming goroutine exits
@@ -2446,6 +2470,9 @@ func HandleStreamTimeout(
 	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
 		timeoutErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
 	}
+
+	// Bill for tokens the provider already processed before the deadline.
+	attachBilledUsageFromContext(ctx, timeoutErr)
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger, postHookSpanFinalizer)

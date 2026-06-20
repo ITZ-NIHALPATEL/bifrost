@@ -1044,6 +1044,24 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				}
 			}
 		}
+		// The request failed/was cancelled but the provider still
+		// processed tokens (carried on BilledUsage). Record cost + tokens so the
+		// logs DB reflects what we were actually billed, mirroring the governance
+		// budget. Only fills when stream accumulation above didn't already
+		// capture usage.
+		if entry.TokenUsageParsed == nil && bifrostErr.ExtraFields.BilledUsage != nil {
+			billed := bifrostErr.ExtraFields.BilledUsage
+			entry.TokenUsageParsed = billed
+			entry.PromptTokens = billed.PromptTokens
+			entry.CompletionTokens = billed.CompletionTokens
+			entry.TotalTokens = billed.TotalTokens
+			if entry.Cost == nil && p.pricingManager != nil {
+				pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
+				if cost := p.pricingManager.CalculateCostForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); cost > 0 {
+					entry.Cost = &cost
+				}
+			}
+		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
